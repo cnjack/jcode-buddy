@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WiFi Setup</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,sans-serif;background:#1a1a2e;color:#fff;min-height:100vh;display:flex;justify-content:center;align-items:center}
+.c{width:90%;max-width:400px;padding:24px}
+h2{text-align:center;margin-bottom:16px;color:#e94560}
+.scan-btn{width:100%;padding:10px;background:#0f3460;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer;margin-bottom:12px}
+.scan-btn:active{background:#16213e}
+.list{max-height:200px;overflow-y:auto;margin-bottom:12px}
+.ap{padding:10px 12px;background:#16213e;border-radius:6px;margin-bottom:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.ap:hover,.ap.sel{background:#0f3460;border:1px solid #e94560}
+.ap .s{font-size:12px;color:#8892b0}
+input{width:100%;padding:10px;background:#16213e;color:#fff;border:1px solid #333;border-radius:8px;font-size:15px;margin-bottom:12px}
+input::placeholder{color:#556}
+.go{width:100%;padding:12px;background:#e94560;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}
+.go:disabled{opacity:.4}
+.msg{text-align:center;margin-top:12px;font-size:14px;color:#8892b0}
+.ok{color:#4caf50}
+.err{color:#e94560}
+.spin{display:inline-block;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:r .8s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes r{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="c">
+<h2>WiFi Setup</h2>
+<button class="scan-btn" onclick="scan()">Scan WiFi Networks</button>
+<div class="list" id="list"></div>
+<input type="text" id="ssid" placeholder="SSID" readonly>
+<input type="password" id="pass" placeholder="Password">
+<button class="go" id="go" onclick="go()" disabled>Connect</button>
+<div class="msg" id="msg"></div>
+</div>
+<script>
+var selSsid='';
+function scan(){
+  document.getElementById('msg').innerHTML='<span class="spin"></span> Scanning...';
+  document.getElementById('list').innerHTML='';
+  fetch('/scan').then(r=>r.json()).then(d=>{
+    document.getElementById('msg').textContent='';
+    var h='';
+    d.forEach(a=>{
+      var enc=a.auth>0?'🔒':'';
+      h+='<div class="ap" onclick="pick(this,\''+a.ssid.replace(/'/g,"\\'")+'\')"><span>'+a.ssid+' '+enc+'</span><span class="s">'+a.rssi+' dBm</span></div>';
+    });
+    if(!h) h='<div class="msg">No networks found</div>';
+    document.getElementById('list').innerHTML=h;
+  }).catch(()=>{
+    document.getElementById('msg').innerHTML='<span class="err">Scan failed</span>';
+  });
+}
+function pick(el,s){
+  document.querySelectorAll('.ap').forEach(e=>e.classList.remove('sel'));
+  el.classList.add('sel');
+  selSsid=s;
+  document.getElementById('ssid').value=s;
+  document.getElementById('go').disabled=false;
+  document.getElementById('pass').focus();
+}
+function go(){
+  var s=document.getElementById('ssid').value;
+  var p=document.getElementById('pass').value;
+  if(!s)return;
+  document.getElementById('go').disabled=true;
+  document.getElementById('msg').innerHTML='<span class="spin"></span> Connecting to '+s+'...';
+  fetch('/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,pass:p})})
+  .then(r=>r.json()).then(d=>{
+    if(d.ok){
+      document.getElementById('msg').innerHTML='<span class="ok">Connected! IP: '+d.ip+'</span>';
+    } else {
+      document.getElementById('msg').innerHTML='<span class="err">Failed: '+(d.msg||'timeout')+'</span>';
+      document.getElementById('go').disabled=false;
+    }
+  }).catch(()=>{
+    document.getElementById('msg').innerHTML='<span class="err">Connection lost</span>';
+    document.getElementById('go').disabled=false;
+  });
+}
+scan();
+</script>
+</body>
+</html>

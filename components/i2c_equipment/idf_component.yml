@@ -1,0 +1,3 @@
+dependencies:
+  SensorLib:
+    git: https://github.com/lewisxhe/SensorLib.git

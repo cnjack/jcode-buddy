@@ -1,0 +1,22 @@
+# Build output
+build/
+
+# ESP-IDF managed components (restored by idf.py build)
+managed_components/
+dependencies.lock
+
+# SDK config backups (sdkconfig + sdkconfig.defaults are the source of truth)
+sdkconfig.old
+
+# IDE / editor
+.vscode/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Dev/debug artifacts
+cat.html
