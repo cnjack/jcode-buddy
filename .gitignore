@@ -20,3 +20,10 @@ Thumbs.db
 
 # Dev/debug artifacts
 cat.html
+
+# Compiled binaries
+*.exe
+
+# Source audio (PCM files are the embedded format)
+*.mp3
+*.wav
