@@ -3,11 +3,15 @@
 #include "ui_clock.h"
 #include "ui_ble.h"
 #include "lvgl.h"
+#include "esp_log.h"
+
+static const char *TAG = "ui_main";
 
 static lv_obj_t *main_screen = NULL;
 static lv_obj_t *s_page_clock = NULL;
 static lv_obj_t *s_page_ble   = NULL;
 static int s_cur_page = 0;  /* 0 = clock, 1 = ble */
+#define NUM_PAGES 2
 
 void ui_main_create(void)
 {
@@ -35,16 +39,18 @@ void ui_main_create(void)
     ui_ble_create(main_screen);
     s_page_ble = lv_obj_get_child(main_screen, -1);  /* last child = ble page */
     lv_obj_add_flag(s_page_ble, LV_OBJ_FLAG_HIDDEN);
+
+    ESP_LOGI(TAG, "UI created: 2 pages (clock/ble), BOOT to cycle");
 }
 
 void ui_main_toggle_page(void)
 {
-    s_cur_page = !s_cur_page;
-    if (s_cur_page == 0) {
-        lv_obj_clear_flag(s_page_clock, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_page_ble, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(s_page_clock, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s_page_ble, LV_OBJ_FLAG_HIDDEN);
-    }
+    /* Hide current page */
+    lv_obj_t *pages[] = { s_page_clock, s_page_ble };
+    lv_obj_add_flag(pages[s_cur_page], LV_OBJ_FLAG_HIDDEN);
+
+    /* Advance to next page */
+    s_cur_page = (s_cur_page + 1) % NUM_PAGES;
+    lv_obj_clear_flag(pages[s_cur_page], LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "Toggled to page %d", s_cur_page);
 }

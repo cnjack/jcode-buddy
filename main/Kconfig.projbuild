@@ -1,0 +1,9 @@
+menu "ASR Configuration"
+
+    config ASR_API_KEY
+        string "Alibaba Qwen ASR API Key"
+        default "sk-d5909eea0141485583d38b754c982068"
+        help
+            API key for Alibaba DashScope Qwen3-ASR-Flash-Realtime service.
+
+endmenu

@@ -1,10 +1,17 @@
 ﻿#include "ui_ble.h"
 #include "ui_styles.h"
 #include "user_config.h"
+#include "asr_client.h"
+#include "app_ble.h"
+#include "lvgl_lock.h"
+#include "cJSON.h"
 #include "lvgl.h"
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include "esp_log.h"
+
+static const char *TAG = "ui_ble";
 
 /* ── Layout ───────────────────────────────────────────────────────────── */
 #define MAX_MESSAGES  5
@@ -53,6 +60,16 @@ static lv_obj_t  *s_msg_rows[MAX_MESSAGES];
 static lv_obj_t  *s_msg_labels[MAX_MESSAGES];
 static char       s_msg_texts[MAX_MESSAGES][128];
 static int        s_msg_count = 0;
+
+/* ── Record / Cancel buttons ──────────────────────────────────────────── */
+static lv_obj_t  *s_rec_btn      = NULL;  /* Record / Stop button */
+static lv_obj_t  *s_rec_btn_lbl  = NULL;
+static lv_obj_t  *s_cancel_btn   = NULL;  /* Cancel button (visible during recording) */
+static lv_obj_t  *s_cancel_lbl   = NULL;
+static bool       s_ble_connected = false;
+
+/* Accumulated ASR text for the current session */
+static char s_asr_text[1024] = {0};
 
 /* ── Pixel helpers (2x scale) ────────────────────────────────────────── */
 static inline void px(int x, int y, lv_color_t c)
@@ -266,6 +283,111 @@ static void cat_anim_timer_cb(lv_timer_t *t)
     }
 }
 
+/* ── BLE JSON helpers ─────────────────────────────────────────────────── */
+static void ble_send_json(const char *cmd, const char *val)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd", cmd);
+    if (val) cJSON_AddStringToObject(root, "val", val);
+    char *json = cJSON_PrintUnformatted(root);
+    if (json) {
+        app_ble_send(json);
+        cJSON_free(json);
+    }
+    cJSON_Delete(root);
+}
+
+/* ── ASR Callbacks (called from ASR task context) ─────────────────────── */
+static void on_asr_text(const char *text, const char *stash)
+{
+    /* Send real-time input to BLE server */
+    char preview[1024];
+    snprintf(preview, sizeof(preview), "%s%s%s",
+             s_asr_text, text ? text : "", stash ? stash : "");
+    ble_send_json("input", preview);
+}
+
+static void on_asr_done(const char *transcript)
+{
+    /* Append final segment to accumulated text */
+    if (transcript && transcript[0]) {
+        size_t cur = strlen(s_asr_text);
+        size_t tr = strlen(transcript);
+        if (cur + tr + 1 < sizeof(s_asr_text)) {
+            strcat(s_asr_text, transcript);
+        }
+    }
+    ESP_LOGI(TAG, "ASR done: %s", transcript);
+}
+
+static void on_asr_ready(void)
+{
+    ESP_LOGI(TAG, "ASR ready, streaming");
+    if (!lvgl_lock(50)) return;
+    /* Transition from "connecting" (yellow) to "recording" (red) */
+    lv_obj_set_style_bg_color(s_rec_btn, lv_color_hex(0xFF3333), 0);
+    lv_label_set_text(s_rec_btn_lbl, LV_SYMBOL_STOP);
+    lv_obj_clear_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+    lvgl_unlock();
+}
+
+static void on_asr_error(const char *message)
+{
+    ESP_LOGE(TAG, "ASR error: %s", message);
+    if (!lvgl_lock(50)) return;
+    /* Reset button state on error */
+    lv_obj_set_style_bg_color(s_rec_btn, COLOR_ACCENT, 0);
+    lv_label_set_text(s_rec_btn_lbl, LV_SYMBOL_AUDIO);
+    lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+    lvgl_unlock();
+}
+
+/* ── Record button click ─────────────────────────────────────────────── */
+static void rec_btn_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (asr_is_active()) {
+        /* Stop → submit */
+        ESP_LOGI(TAG, "Stopping ASR (submit)");
+        asr_stop();
+        ble_send_json("submit", NULL);
+        lv_obj_set_style_bg_color(s_rec_btn, COLOR_ACCENT, 0);
+        lv_label_set_text(s_rec_btn_lbl, LV_SYMBOL_AUDIO);
+        lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        /* Start recording — show connecting state first */
+        memset(s_asr_text, 0, sizeof(s_asr_text));
+        asr_callbacks_t cbs = {
+            .on_text  = on_asr_text,
+            .on_done  = on_asr_done,
+            .on_error = on_asr_error,
+            .on_ready = on_asr_ready,
+        };
+        ESP_LOGI(TAG, "Starting ASR...");
+        if (asr_start(&cbs)) {
+            /* Connecting state: yellow button + "..." */
+            lv_obj_set_style_bg_color(s_rec_btn, lv_color_hex(0xFFA500), 0);
+            lv_label_set_text(s_rec_btn_lbl, "...");
+            /* Cancel available during connecting too */
+            lv_obj_clear_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/* ── Cancel button click ─────────────────────────────────────────────── */
+static void cancel_btn_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (asr_is_active()) {
+        ESP_LOGI(TAG, "Cancelling ASR");
+        asr_stop();
+        ble_send_json("cancel", NULL);
+    }
+    lv_obj_set_style_bg_color(s_rec_btn, COLOR_ACCENT, 0);
+    lv_label_set_text(s_rec_btn_lbl, LV_SYMBOL_AUDIO);
+    lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
 /* ── Public: create BLE page ─────────────────────────────────────────── */
 void ui_ble_create(lv_obj_t *parent)
 {
@@ -352,6 +474,41 @@ void ui_ble_create(lv_obj_t *parent)
     /* Start animation timer (~12 FPS) */
     s_anim_timer = lv_timer_create(cat_anim_timer_cb, 83, NULL);
     draw_cat(PET_SLEEP, 0);
+
+    /* ── Record button (bottom-right, hidden until BLE connected) ─── */
+    s_rec_btn = lv_button_create(s_ble_page);
+    lv_obj_set_size(s_rec_btn, 44, 44);
+    lv_obj_align(s_rec_btn, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+    lv_obj_set_style_radius(s_rec_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_rec_btn, COLOR_ACCENT, 0);
+    lv_obj_set_style_bg_opa(s_rec_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(s_rec_btn, 10, 0);
+    lv_obj_set_style_shadow_color(s_rec_btn, COLOR_ACCENT, 0);
+    lv_obj_set_style_shadow_opa(s_rec_btn, 100, 0);
+    lv_obj_add_event_cb(s_rec_btn, rec_btn_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(s_rec_btn, LV_OBJ_FLAG_HIDDEN);
+
+    s_rec_btn_lbl = lv_label_create(s_rec_btn);
+    lv_label_set_text(s_rec_btn_lbl, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_color(s_rec_btn_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_rec_btn_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_center(s_rec_btn_lbl);
+
+    /* ── Cancel button (left of record button, hidden until recording) ── */
+    s_cancel_btn = lv_button_create(s_ble_page);
+    lv_obj_set_size(s_cancel_btn, 44, 44);
+    lv_obj_align(s_cancel_btn, LV_ALIGN_BOTTOM_RIGHT, -60, -8);
+    lv_obj_set_style_radius(s_cancel_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_cancel_btn, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_bg_opa(s_cancel_btn, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(s_cancel_btn, cancel_btn_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+
+    s_cancel_lbl = lv_label_create(s_cancel_btn);
+    lv_label_set_text(s_cancel_lbl, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(s_cancel_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_cancel_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_center(s_cancel_lbl);
 }
 
 /* ── Public: add a message ───────────────────────────────────────────── */
@@ -415,6 +572,21 @@ void ui_ble_set_pet_state(const char *state)
 /* ── Public: BLE connection indicator ───────────────────────────────── */
 void ui_ble_set_connected(bool connected)
 {
+    s_ble_connected = connected;
     lv_obj_set_style_bg_color(s_conn_dot,
         connected ? lv_color_hex(0x00CC66) : lv_color_hex(0x444444), 0);
+
+    /* Show record button only when BLE is connected */
+    if (connected) {
+        lv_obj_clear_flag(s_rec_btn, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_rec_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+        /* Stop ASR if BLE disconnects during recording */
+        if (asr_is_active()) {
+            asr_stop();
+            lv_obj_set_style_bg_color(s_rec_btn, COLOR_ACCENT, 0);
+            lv_label_set_text(s_rec_btn_lbl, LV_SYMBOL_AUDIO);
+        }
+    }
 }

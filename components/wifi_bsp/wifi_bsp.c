@@ -14,6 +14,7 @@ static const char *TAG = "wifi_bsp";
 static bool s_connected = false;
 static bool s_wifi_started = false;
 static bool s_ap_active = false;
+static bool s_reconnect_enabled = true;
 static wifi_connected_cb_t s_on_connected = NULL;
 static volatile bool s_sntp_synced = false;
 static esp_netif_t *s_ap_netif = NULL;
@@ -29,9 +30,13 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ESP_LOGI(TAG, "WiFi connecting...");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
-        ESP_LOGW(TAG, "WiFi disconnected, reconnecting...");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        esp_wifi_connect();
+        if (s_reconnect_enabled) {
+            ESP_LOGW(TAG, "WiFi disconnected, reconnecting...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_wifi_connect();
+        } else {
+            ESP_LOGW(TAG, "WiFi disconnected, auto-reconnect disabled");
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
@@ -95,11 +100,49 @@ esp_err_t wifi_scan(wifi_ap_record_t *ap_list, uint16_t *count)
 {
     wifi_scan_config_t scan_cfg = {
         .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
     };
+
+    /* In APSTA mode, scan briefly on the home channel first, then do a full scan
+       in small batches to keep the AP responsive for connected clients. */
+    if (s_ap_active) {
+        /* Get current AP channel */
+        uint8_t primary = 0;
+        wifi_second_chan_t second = 0;
+        esp_wifi_get_channel(&primary, &second);
+        if (primary > 0) {
+            /* Quick scan on AP's own channel first (no off-channel hop) */
+            scan_cfg.channel = primary;
+            esp_wifi_scan_start(&scan_cfg, true);
+            uint16_t home_count = *count;
+            esp_wifi_scan_get_ap_records(&home_count, ap_list);
+
+            /* Now do full scan with short dwell to minimize off-channel time */
+            scan_cfg.channel = 0;
+            esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+            if (err != ESP_OK) {
+                /* Return home-channel results if full scan failed */
+                *count = home_count;
+                return (home_count > 0) ? ESP_OK : err;
+            }
+            return esp_wifi_scan_get_ap_records(count, ap_list);
+        }
+    }
+
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
     if (err != ESP_OK) return err;
 
     return esp_wifi_scan_get_ap_records(count, ap_list);
+}
+
+void wifi_sta_stop(void)
+{
+    s_reconnect_enabled = false;
+    if (s_wifi_started) {
+        esp_wifi_disconnect();
+    }
+    s_connected = false;
+    ESP_LOGI(TAG, "STA stopped, auto-reconnect disabled");
 }
 
 void wifi_sta_start(const char *ssid, const char *password)
@@ -117,6 +160,7 @@ void wifi_sta_start(const char *ssid, const char *password)
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
 
+    s_reconnect_enabled = true;
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     if (s_wifi_started) {

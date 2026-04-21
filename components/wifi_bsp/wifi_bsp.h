@@ -40,6 +40,12 @@ esp_err_t wifi_scan(wifi_ap_record_t *ap_list, uint16_t *count);
 void wifi_sta_start(const char *ssid, const char *password);
 
 /**
+ * @brief Stop STA reconnection attempts.
+ *        Call before starting provisioning to prevent reconnect storms.
+ */
+void wifi_sta_stop(void);
+
+/**
  * @brief Load saved WiFi credentials from NVS.
  * @return true if credentials were found and loaded into ssid/pass buffers.
  */

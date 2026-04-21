@@ -276,3 +276,22 @@ while (!wifi_is_connected())
 - Safe to use as a general-purpose input after boot.
 - Do **not** drive it LOW during reset or it enters download mode.
 - Useful for runtime controls (e.g. brightness cycling) without needing extra hardware.
+
+### 6.8 Battery Power Latch (TCA9554 IO6)
+
+**Problem:** When powered from battery (no USB), releasing the PWR button cuts power immediately.
+
+**Root cause:** The board uses a hardware power latch circuit controlled via TCA9554 I/O expander **IO6** (address 0x20, on I2C bus 0). Pressing PWR temporarily enables power, but the MCU must drive IO6 HIGH to keep the latch active.
+
+**Solution:** Call `power_latch_enable()` in `app_main()` immediately after `i2c_master_init()`:
+
+```c
+/* Set TCA9554 IO6 as output, drive HIGH to keep battery power latched */
+cfg_val &= ~(1 << 6);  // IO6 = output
+out_val |= (1 << 6);   // IO6 = HIGH
+```
+
+**Notes:**
+- Same TCA9554 device (0x20) is used for PA enable (IO7) — operations are independent.
+- To power off programmatically: set IO6 LOW via TCA9554.
+- GPIO 16 can be read to detect if board is running on battery power.

@@ -301,6 +301,26 @@ bool app_ble_is_connected(void)
     return s_connected;
 }
 
+bool app_ble_send(const char *data)
+{
+    if (!s_connected || !data) return false;
+
+    size_t len = strlen(data);
+    /* Build payload with trailing newline for NDJSON framing */
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    if (!om) return false;
+    /* Append newline */
+    uint8_t nl = '\n';
+    os_mbuf_append(om, &nl, 1);
+
+    int rc = ble_gatts_notify_custom(s_conn_handle, s_tx_handle, om);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "BLE notify failed: %d", rc);
+        return false;
+    }
+    return true;
+}
+
 void app_ble_init(void)
 {
     int rc;

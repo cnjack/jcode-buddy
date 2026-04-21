@@ -54,8 +54,10 @@ static esp_err_t pa_enable(void)
 }
 
 static esp_codec_dev_handle_t s_playback = NULL;
+static esp_codec_dev_handle_t s_record   = NULL;
 static SemaphoreHandle_t      s_audio_mux = NULL;
 static bool                   s_ready = false;
+static bool                   s_recording = false;
 
 void audio_bsp_init(void)
 {
@@ -81,6 +83,13 @@ void audio_bsp_init(void)
     if (!s_playback) {
         ESP_LOGE(TAG, "Failed to get playback handle");
         return;
+    }
+
+    s_record = get_record_handle();
+    if (!s_record) {
+        ESP_LOGW(TAG, "No record handle (ES7210 not available)");
+    } else {
+        ESP_LOGI(TAG, "Record handle obtained (ES7210)");
     }
 
     /* Set volume + open playback device (matching Waveshare FactoryProgram) */
@@ -133,4 +142,76 @@ void audio_set_volume(uint8_t vol)
 bool audio_is_ready(void)
 {
     return s_ready;
+}
+
+esp_err_t audio_record_start(void)
+{
+    if (!s_ready || !s_record) return ESP_ERR_INVALID_STATE;
+    if (s_recording) return ESP_OK;
+
+    xSemaphoreTake(s_audio_mux, portMAX_DELAY);
+
+    /* Close playback to free the shared I2S for recording at a different sample rate */
+    esp_codec_dev_close(s_playback);
+
+    /* Open ES7210 for 16kHz mono 16-bit — matches Qwen ASR input requirement */
+    esp_codec_dev_set_in_gain(s_record, 36.0);
+    esp_codec_dev_sample_info_t fs = {
+        .sample_rate    = 16000,
+        .channel        = 1,
+        .bits_per_sample = 16,
+    };
+    esp_err_t ret = esp_codec_dev_open(s_record, &fs);
+    if (ret != ESP_CODEC_DEV_OK) {
+        ESP_LOGE(TAG, "Failed to open record device: %d", ret);
+        /* Reopen playback on failure */
+        esp_codec_dev_sample_info_t play_fs = {
+            .sample_rate = 24000, .channel = 2, .bits_per_sample = 16,
+        };
+        esp_codec_dev_open(s_playback, &play_fs);
+        xSemaphoreGive(s_audio_mux);
+        return ESP_FAIL;
+    }
+
+    s_recording = true;
+    xSemaphoreGive(s_audio_mux);
+    ESP_LOGI(TAG, "Recording started (16kHz/16bit/mono)");
+    return ESP_OK;
+}
+
+int audio_record_read(uint8_t *buf, uint32_t len)
+{
+    if (!s_recording || !s_record || !buf || len == 0) return -1;
+
+    esp_err_t ret = esp_codec_dev_read(s_record, buf, (int)len);
+    if (ret != ESP_CODEC_DEV_OK) {
+        ESP_LOGE(TAG, "Record read error: %d", ret);
+        return -1;
+    }
+    return (int)len;
+}
+
+void audio_record_stop(void)
+{
+    if (!s_recording) return;
+
+    xSemaphoreTake(s_audio_mux, portMAX_DELAY);
+    esp_codec_dev_close(s_record);
+    s_recording = false;
+
+    /* Reopen playback device after recording */
+    esp_codec_dev_sample_info_t fs = {
+        .sample_rate    = 24000,
+        .channel        = 2,
+        .bits_per_sample = 16,
+    };
+    esp_codec_dev_open(s_playback, &fs);
+
+    xSemaphoreGive(s_audio_mux);
+    ESP_LOGI(TAG, "Recording stopped");
+}
+
+bool audio_is_recording(void)
+{
+    return s_recording;
 }

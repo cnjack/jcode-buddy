@@ -28,6 +28,7 @@
 #include "ui_wifi_setup.h"
 #include "app_ble.h"
 #include "lvgl_lock.h"
+#include "driver/i2c_master.h"
 
 static const char *TAG = "main";
 
@@ -38,6 +39,58 @@ static bool main_ui_created = false;
 
 // BOOT button (GPIO0) for page switching
 #define BOOT_BUTTON_GPIO  GPIO_NUM_0
+
+/* ── Power-latch via TCA9554 IO6 ──────────────────────────────────────
+ * The board's battery power circuit requires the MCU to drive TCA9554 IO6
+ * HIGH after boot to keep the power on.  Without this, releasing the PWR
+ * button cuts power immediately.
+ */
+#define TCA9554_ADDR       0x20
+#define TCA9554_REG_OUTPUT 0x01
+#define TCA9554_REG_CONFIG 0x03
+
+static void power_latch_enable(void)
+{
+    i2c_master_bus_handle_t bus = NULL;
+    if (i2c_master_get_bus_handle(0, &bus) != ESP_OK) {
+        ESP_LOGE(TAG, "Power latch: cannot get I2C bus");
+        return;
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = TCA9554_ADDR,
+        .scl_speed_hz    = 400000,
+    };
+    i2c_master_dev_handle_t dev = NULL;
+    if (i2c_master_bus_add_device(bus, &dev_cfg, &dev) != ESP_OK) {
+        ESP_LOGE(TAG, "Power latch: cannot add TCA9554 device");
+        return;
+    }
+
+    uint8_t buf[2];
+
+    /* Set IO6 as output (bit6 = 0 in config register) */
+    buf[0] = TCA9554_REG_CONFIG;
+    uint8_t cfg_val = 0xFF;
+    i2c_master_transmit_receive(dev, buf, 1, &cfg_val, 1, 100);
+    cfg_val &= ~(1 << 6);
+    buf[0] = TCA9554_REG_CONFIG;
+    buf[1] = cfg_val;
+    i2c_master_transmit(dev, buf, 2, 100);
+
+    /* Drive IO6 HIGH to latch power on */
+    buf[0] = TCA9554_REG_OUTPUT;
+    uint8_t out_val = 0x00;
+    i2c_master_transmit_receive(dev, buf, 1, &out_val, 1, 100);
+    out_val |= (1 << 6);
+    buf[0] = TCA9554_REG_OUTPUT;
+    buf[1] = out_val;
+    i2c_master_transmit(dev, buf, 2, 100);
+
+    i2c_master_bus_rm_device(dev);
+    ESP_LOGI(TAG, "Power latch enabled (TCA9554 IO6 = HIGH)");
+}
 
 #define BYTES_PER_PIXEL (LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565))
 #define BUFF_SIZE (EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * BYTES_PER_PIXEL)
@@ -112,15 +165,24 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     uint8_t buf[32] = {0};
     ESP_ERROR_CHECK_WITHOUT_ABORT(i2c_master_write_read_dev(disp_touch_dev_handle, cmd, 11, buf, 32));
 
+    /* Touch panel reports in portrait coordinates:
+     *   px (buf[2:3]) = portrait Y (0-639) → landscape X
+     *   py (buf[4:5]) = portrait X (0-171) → landscape Y
+     */
     uint16_t px = (((uint16_t)buf[2] & 0x0f) << 8) | (uint16_t)buf[3];
     uint16_t py = (((uint16_t)buf[4] & 0x0f) << 8) | (uint16_t)buf[5];
 
     if (buf[1] > 0 && buf[1] < 5) {
         data->state = LV_INDEV_STATE_PRESSED;
-        if (px > EXAMPLE_LCD_V_RES) px = EXAMPLE_LCD_V_RES;
-        if (py > EXAMPLE_LCD_H_RES) py = EXAMPLE_LCD_H_RES;
-        data->point.x = py;
-        data->point.y = (EXAMPLE_LCD_V_RES - px);
+
+        /* Clamp to actual display ranges */
+        if (px >= EXAMPLE_LCD_H_RES) px = EXAMPLE_LCD_H_RES - 1;  /* 0-639 */
+        if (py >= EXAMPLE_LCD_V_RES) py = EXAMPLE_LCD_V_RES - 1;  /* 0-171 */
+
+        /* Map portrait→landscape, X mirrored to match display transpose */
+        data->point.x = (EXAMPLE_LCD_H_RES - 1 - px);
+        data->point.y = (EXAMPLE_LCD_V_RES - 1 - py);
+
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
@@ -209,6 +271,7 @@ void app_main(void)
     assert(flush_done_sem);
 
     i2c_master_init();
+    power_latch_enable();  /* Must be called ASAP after I2C init to keep battery power on */
     touch_i2c_master_init();
     i2c_rtc_setup();
     i2c_qmi_setup();
@@ -352,6 +415,7 @@ void app_main(void)
         }
         if (!wifi_is_connected()) {
             ESP_LOGW(TAG, "Saved WiFi failed, starting provisioning");
+            wifi_sta_stop();
             has_cred = false;
         }
     }
