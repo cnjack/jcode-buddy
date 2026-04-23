@@ -9,14 +9,14 @@
 typedef void (*wifi_connected_cb_t)(void);
 
 /**
- * @brief Initialize WiFi subsystem (NVS, netif, event loop)
- *        Does NOT start WiFi.
+ * @brief Initialize WiFi subsystem and start in APSTA mode.
+ *        AP is available for provisioning immediately.
  */
 void wifi_init(void);
 
 /**
- * @brief Start WiFi AP for provisioning.
- *        Creates AP with given SSID (open, no password).
+ * @brief Configure the AP with the given SSID for provisioning.
+ *        Ensures APSTA mode is active.
  */
 void wifi_ap_start(const char *ap_ssid);
 
@@ -24,6 +24,12 @@ void wifi_ap_start(const char *ap_ssid);
  * @brief Stop AP mode and switch to STA-only.
  */
 void wifi_ap_stop(void);
+
+/**
+ * @brief Switch from APSTA to STA-only mode.
+ *        Call after STA is connected and provisioning is not needed.
+ */
+void wifi_switch_to_sta(void);
 
 /**
  * @brief Scan for nearby WiFi networks.

@@ -393,10 +393,10 @@ void app_main(void)
         }
     }
 
-    /* BLE init before WiFi -- must start before WiFi connects (shared RF resources) */
+    /* BLE init (stack only, no advertising yet) */
     app_ble_init();
 
-    /* -- WiFi initialization -- */
+    /* -- WiFi initialization (starts in APSTA mode) -- */
     wifi_init();
 
     char ssid[33] = {0};
@@ -413,6 +413,7 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(1000));
             retry++;
         }
+
         if (!wifi_is_connected()) {
             ESP_LOGW(TAG, "Saved WiFi failed, starting provisioning");
             wifi_sta_stop();
@@ -449,6 +450,12 @@ void app_main(void)
             lvgl_unlock();
         }
     }
+
+    /* WiFi connected — switch to STA-only, then enable BLE advertising */
+    if (wifi_is_connected()) {
+        wifi_switch_to_sta();
+    }
+    app_ble_start_adv();
 
     xTaskCreatePinnedToCore(clock_update_task, "Clock", 4 * 1024, NULL, 3, NULL, 1);
     xTaskCreatePinnedToCore(button_task, "Button", 2 * 1024, NULL, 1, NULL, 1);

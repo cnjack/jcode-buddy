@@ -1,4 +1,6 @@
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 #include "wifi_bsp.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -53,12 +55,24 @@ void wifi_init(void)
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
 
+    /* Create AP netif upfront — always start in APSTA mode so the AP is
+     * available for provisioning without needing a mode switch later. */
+    if (!s_ap_netif) {
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+    }
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
 
     esp_event_handler_instance_t inst_wifi, inst_ip;
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &inst_wifi);
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &inst_ip);
+
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_wifi_start();
+    s_wifi_started = true;
+    s_ap_active = true;
+    ESP_LOGI(TAG, "WiFi started in APSTA mode");
 }
 
 void wifi_ap_start(const char *ap_ssid)
@@ -66,7 +80,12 @@ void wifi_ap_start(const char *ap_ssid)
     if (!s_ap_netif) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
     }
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
+
+    /* Ensure APSTA mode is active */
+    if (!s_ap_active) {
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        s_ap_active = true;
+    }
 
     wifi_config_t ap_config = {
         .ap = {
@@ -83,7 +102,6 @@ void wifi_ap_start(const char *ap_ssid)
         esp_wifi_start();
         s_wifi_started = true;
     }
-    s_ap_active = true;
     ESP_LOGI(TAG, "AP started: %s", ap_ssid);
 }
 
@@ -93,6 +111,15 @@ void wifi_ap_stop(void)
         esp_wifi_set_mode(WIFI_MODE_STA);
         s_ap_active = false;
         ESP_LOGI(TAG, "AP stopped, switched to STA-only");
+    }
+}
+
+void wifi_switch_to_sta(void)
+{
+    if (s_ap_active) {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        s_ap_active = false;
+        ESP_LOGI(TAG, "Switched to STA-only mode");
     }
 }
 
@@ -161,7 +188,7 @@ void wifi_sta_start(const char *ssid, const char *password)
     strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
 
     s_reconnect_enabled = true;
-    esp_wifi_set_mode(WIFI_MODE_STA);
+    /* Never change mode here — mode is managed by wifi_init / wifi_ap_stop */
     esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     if (s_wifi_started) {
         esp_wifi_disconnect();
@@ -197,18 +224,27 @@ bool wifi_is_connected(void)
 
 static void sntp_sync_cb(struct timeval *tv)
 {
-    ESP_LOGI(TAG, "SNTP time synced: %lld", tv->tv_sec);
     s_sntp_synced = true;
+    time_t now = tv->tv_sec;
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    ESP_LOGI(TAG, "SNTP synced: %04d-%02d-%02d %02d:%02d:%02d",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }
 
 void sntp_start(void)
 {
+    setenv("TZ", "CST-8", 1);
+    tzset();
+
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
-    esp_sntp_setservername(1, "time.nist.gov");
+    esp_sntp_setservername(0, "ntp.aliyun.com");
+    esp_sntp_setservername(1, "pool.ntp.org");
+    esp_sntp_setservername(2, "time.nist.gov");
     esp_sntp_set_time_sync_notification_cb(sntp_sync_cb);
     esp_sntp_init();
-    ESP_LOGI(TAG, "SNTP started");
+    ESP_LOGI(TAG, "SNTP started (ntp.aliyun.com)");
 }
 
 void sntp_wait_sync(void)

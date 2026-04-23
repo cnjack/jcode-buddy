@@ -199,13 +199,19 @@ void audio_record_stop(void)
     esp_codec_dev_close(s_record);
     s_recording = false;
 
+    /* Small delay to let I2S DMA buffers fully release */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
     /* Reopen playback device after recording */
     esp_codec_dev_sample_info_t fs = {
         .sample_rate    = 24000,
         .channel        = 2,
         .bits_per_sample = 16,
     };
-    esp_codec_dev_open(s_playback, &fs);
+    esp_err_t ret = esp_codec_dev_open(s_playback, &fs);
+    if (ret != ESP_CODEC_DEV_OK) {
+        ESP_LOGE(TAG, "Failed to reopen playback after recording: %d", ret);
+    }
 
     xSemaphoreGive(s_audio_mux);
     ESP_LOGI(TAG, "Recording stopped");

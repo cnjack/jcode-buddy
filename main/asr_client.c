@@ -3,7 +3,6 @@
 #include "user_config.h"
 #include "esp_log.h"
 #include "esp_websocket_client.h"
-#include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include "mbedtls/base64.h"
 #include "freertos/FreeRTOS.h"
@@ -12,9 +11,6 @@
 #include <string.h>
 
 static const char *TAG = "asr_client";
-
-extern const char dashscope_ca_pem_start[] asm("_binary_dashscope_ca_pem_start");
-extern const char dashscope_ca_pem_end[]   asm("_binary_dashscope_ca_pem_end");
 
 #define ASR_WS_URL       "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-asr-flash-realtime"
 #define ASR_API_KEY       CONFIG_ASR_API_KEY
@@ -31,6 +27,10 @@ extern const char dashscope_ca_pem_end[]   asm("_binary_dashscope_ca_pem_end");
 static esp_websocket_client_handle_t s_ws = NULL;
 static TaskHandle_t s_asr_task = NULL;
 static EventGroupHandle_t s_evt = NULL;
+
+/* Embedded CA certificate for dashscope.aliyuncs.com */
+extern const uint8_t dashscope_ca_pem_start[] asm("_binary_dashscope_ca_pem_start");
+extern const uint8_t dashscope_ca_pem_end[]   asm("_binary_dashscope_ca_pem_end");
 static asr_callbacks_t s_cbs = {0};
 static volatile bool s_active = false;
 
@@ -204,7 +204,7 @@ static void asr_task(void *arg)
         .headers = auth_header,
         .buffer_size = 2048,
         .task_stack = 8 * 1024,
-        .cert_pem = dashscope_ca_pem_start,
+        .cert_pem = (const char *)dashscope_ca_pem_start,
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 10000,
     };
@@ -265,14 +265,14 @@ static void asr_task(void *arg)
     }
 
 cleanup:
-    audio_record_stop();
-
     if (s_ws) {
-        /* Stop WS client first to prevent further event callbacks */
+        /* Destroy WS client first to free memory before DMA reallocation */
         esp_websocket_client_close(s_ws, pdMS_TO_TICKS(2000));
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
     }
+
+    audio_record_stop();
 
     /* Small delay to let any pending WS events drain */
     vTaskDelay(pdMS_TO_TICKS(100));

@@ -6,5 +6,4 @@ idf_component_register(SRCS ${MAIN_SRCS}
                              cjson lvgl esp_driver_gpio esp_driver_spi bt esp_http_server nvs_flash
                              esp_websocket_client mbedtls
                     PRIV_REQUIRES esp_timer
-                    EMBED_FILES "asset/connected.pcm" "asset/successful.pcm" "asset/wifi_setup.html"
-                    EMBED_TXTFILES "asset/dashscope_ca.pem")
+                    EMBED_FILES "asset/connected.pcm" "asset/successful.pcm" "asset/wifi_setup.html" "asset/dashscope_ca.pem")

@@ -73,6 +73,8 @@ static const ble_uuid128_t NUS_TX_UUID = BLE_UUID128_INIT(
 static uint16_t s_tx_handle;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool     s_connected   = false;
+static bool     s_adv_paused  = false;
+static bool     s_adv_allowed = false;  /* true after caller says it's OK to advertise */
 
 /* NDJSON line buffer — accumulate bytes until '\n' */
 #define RX_BUF_SIZE 1024
@@ -245,6 +247,10 @@ static void start_adv(void)
     struct ble_gap_adv_params params = {0};
     params.conn_mode = BLE_GAP_CONN_MODE_UND;
     params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    /* Wider interval reduces WiFi/BLE coexistence contention.
+     * Default (30-60 ms) starves the WiFi radio during STA connection. */
+    params.itvl_min  = 160;   /* 100 ms  (unit = 0.625 ms) */
+    params.itvl_max  = 320;   /* 200 ms */
 
     struct ble_hs_adv_fields fields = {0};
     fields.flags                = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -283,9 +289,12 @@ static void ble_on_sync(void)
     char device_name[20];
     snprintf(device_name, sizeof(device_name), "JCODE-%02X%02X", addr[1], addr[0]);
     ble_svc_gap_device_name_set(device_name);
-    ESP_LOGI(TAG, "BLE advertising as: %s", device_name);
+    ESP_LOGI(TAG, "BLE ready as: %s", device_name);
 
-    start_adv();
+    /* Only start advertising if explicitly allowed (after WiFi connects) */
+    if (s_adv_allowed) {
+        start_adv();
+    }
 }
 
 static void ble_host_task(void *param)
@@ -299,6 +308,35 @@ static void ble_host_task(void *param)
 bool app_ble_is_connected(void)
 {
     return s_connected;
+}
+
+void app_ble_pause_adv(void)
+{
+    if (!s_connected) {
+        ble_gap_adv_stop();
+        s_adv_paused = true;
+        ESP_LOGI(TAG, "BLE advertising paused for WiFi");
+    }
+}
+
+void app_ble_resume_adv(void)
+{
+    if (s_adv_paused) {
+        s_adv_paused = false;
+        if (!s_connected) {
+            start_adv();
+        }
+        ESP_LOGI(TAG, "BLE advertising resumed");
+    }
+}
+
+void app_ble_start_adv(void)
+{
+    s_adv_allowed = true;
+    if (!s_connected && !s_adv_paused) {
+        start_adv();
+    }
+    ESP_LOGI(TAG, "BLE advertising enabled");
 }
 
 bool app_ble_send(const char *data)
